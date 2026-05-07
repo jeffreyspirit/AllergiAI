@@ -1,14 +1,16 @@
 "use client"
 
-import { useState, useRef } from "react"
+import { useState, useRef, useCallback } from "react"
 import { createWorker } from "tesseract.js"
-import { Camera, Upload, Loader2, CheckCircle2, AlertCircle, Info, ScanLine, Globe, FlaskConical, X } from "lucide-react"
+import { Camera, Upload, Loader2, CheckCircle2, AlertCircle, ScanLine, Globe, FlaskConical, X, Crop, RotateCcw } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { Card, CardContent, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { motion, AnimatePresence } from "framer-motion"
 import { lookupAllergen, KnownAllergen } from "@/lib/allergenDB"
+import ReactCrop, { type Crop as CropType } from "react-image-crop"
+import "react-image-crop/dist/ReactCrop.css"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 interface Ingredient {
@@ -201,6 +203,51 @@ function parseIngredientZone(rawText: string): string[] {
   return Array.from(new Set(raw))
 }
 
+// ─── Crop helpers ─────────────────────────────────────────────────────────────
+function getDefaultCrop(width: number, height: number): CropType {
+  return {
+    unit: "%",
+    width: 90,
+    height: 90,
+    x: 5,
+    y: 5
+  }
+}
+
+function extractCroppedDataUrl(
+  imgEl: HTMLImageElement,
+  crop: CropType
+): string {
+  const canvas = document.createElement("canvas")
+  const scaleX = imgEl.naturalWidth / imgEl.width
+  const scaleY = imgEl.naturalHeight / imgEl.height
+
+  const pixelCrop =
+    crop.unit === "%"
+      ? {
+          x: (crop.x / 100) * imgEl.naturalWidth,
+          y: (crop.y / 100) * imgEl.naturalHeight,
+          width: (crop.width / 100) * imgEl.naturalWidth,
+          height: (crop.height / 100) * imgEl.naturalHeight,
+        }
+      : {
+          x: crop.x * scaleX,
+          y: crop.y * scaleY,
+          width: crop.width * scaleX,
+          height: crop.height * scaleY,
+        }
+
+  canvas.width = pixelCrop.width
+  canvas.height = pixelCrop.height
+  const ctx = canvas.getContext("2d")!
+  ctx.drawImage(
+    imgEl,
+    pixelCrop.x, pixelCrop.y, pixelCrop.width, pixelCrop.height,
+    0, 0, pixelCrop.width, pixelCrop.height
+  )
+  return canvas.toDataURL("image/jpeg", 0.95)
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 export function Scanner({ allergies }: ScannerProps) {
   const [isProcessing, setIsProcessing] = useState(false)
@@ -213,6 +260,34 @@ export function Scanner({ allergies }: ScannerProps) {
   const [scanError, setScanError] = useState<"low_quality" | "no_text" | "no_ingredients" | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
+
+  // ── Crop modal state ────────────────────────────────────────────────────────
+  const [cropModalOpen, setCropModalOpen] = useState(false)
+  const [rawImageSrc, setRawImageSrc] = useState<string | null>(null)
+  const [crop, setCrop] = useState<CropType>()
+  const cropImgRef = useRef<HTMLImageElement>(null)
+
+  const onCropImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
+    const { width, height } = e.currentTarget
+    setCrop(getDefaultCrop(width, height))
+  }, [])
+
+  const handleConfirmCrop = () => {
+    if (!cropImgRef.current || !crop || !crop.width || !crop.height) {
+      // No crop drawn — use full image
+      if (rawImageSrc) processImage(rawImageSrc)
+      setCropModalOpen(false)
+      return
+    }
+    const cropped = extractCroppedDataUrl(cropImgRef.current, crop)
+    processImage(cropped)
+    setCropModalOpen(false)
+  }
+
+  const handleSkipCrop = () => {
+    if (rawImageSrc) processImage(rawImageSrc)
+    setCropModalOpen(false)
+  }
 
   const processImage = async (imageSrc: string) => {
     setImagePreview(imageSrc)
@@ -329,13 +404,18 @@ export function Scanner({ allergies }: ScannerProps) {
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (file) {
-      const reader = new FileReader()
-      reader.onload = ev => {
-        if (ev.target?.result) processImage(ev.target.result as string)
-      }
-      reader.readAsDataURL(file)
+    if (!file) return
+    // Reset input so the same file can be re-selected after crop
+    e.target.value = ""
+    const reader = new FileReader()
+    reader.onload = ev => {
+      if (!ev.target?.result) return
+      const src = ev.target.result as string
+      setRawImageSrc(src)
+      setCrop(undefined)        // reset crop selection
+      setCropModalOpen(true)    // open crop modal
     }
+    reader.readAsDataURL(file)
   }
 
   const hasMatch = results?.some(i => i.isAllergen)
@@ -491,6 +571,78 @@ export function Scanner({ allergies }: ScannerProps) {
           <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileUpload} />
           {/* Camera capture input — opens camera directly on mobile */}
           <input type="file" ref={cameraInputRef} className="hidden" accept="image/*" capture="environment" onChange={handleFileUpload} />
+
+          {/* ── Crop Modal ── */}
+          <Dialog open={cropModalOpen} onOpenChange={open => { if (!open) setCropModalOpen(false) }}>
+            <DialogContent className="rounded-3xl border border-border/50 glass-card max-w-lg w-full mx-3 p-0 overflow-hidden">
+              {/* Header */}
+              <div className="hero-gradient px-6 py-4 flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center">
+                  <Crop className="w-4 h-4 text-white" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <DialogTitle className="text-white font-bold text-base leading-tight">
+                    Crop Image
+                  </DialogTitle>
+                  <DialogDescription className="text-white/60 text-xs">
+                    Select the ingredients section for better accuracy
+                  </DialogDescription>
+                </div>
+                <button
+                  onClick={() => setCropModalOpen(false)}
+                  className="w-8 h-8 rounded-full bg-white/15 hover:bg-white/30 flex items-center justify-center transition-colors"
+                >
+                  <X className="w-4 h-4 text-white" />
+                </button>
+              </div>
+
+              {/* Crop area */}
+              <div className="bg-black/90 flex items-center justify-center min-h-[240px] max-h-[55vh] overflow-auto">
+                {rawImageSrc && (
+                  <ReactCrop
+                    crop={crop}
+                    onChange={c => setCrop(c)}
+                    onComplete={c => setCrop(c)}
+                    className="max-w-full"
+                    ruleOfThirds
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      ref={cropImgRef}
+                      src={rawImageSrc}
+                      alt="Crop preview"
+                      onLoad={onCropImageLoad}
+                      style={{ maxHeight: "55vh", objectFit: "contain", display: "block" }}
+                    />
+                  </ReactCrop>
+                )}
+              </div>
+
+              {/* Tip */}
+              <p className="px-5 pt-3 text-[11px] text-muted-foreground text-center">
+                Drag to select · Resize handles at corners · Leave empty to use full image
+              </p>
+
+              {/* Actions */}
+              <div className="flex gap-3 px-5 py-4">
+                <Button
+                  variant="outline"
+                  className="flex-1 rounded-2xl gap-2 border-dashed"
+                  onClick={handleSkipCrop}
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  Use Full Image
+                </Button>
+                <Button
+                  className="flex-1 rounded-2xl gap-2 hero-gradient border-0 text-white shadow-lg shadow-primary/30 hover:opacity-90"
+                  onClick={handleConfirmCrop}
+                >
+                  <Crop className="w-4 h-4" />
+                  Crop & Scan
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
 
           {/* Progress bar */}
           <AnimatePresence>
