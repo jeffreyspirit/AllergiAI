@@ -11,6 +11,7 @@ import { motion, AnimatePresence } from "framer-motion"
 import { lookupAllergen, KnownAllergen } from "@/lib/allergenDB"
 import ReactCrop, { type Crop as CropType } from "react-image-crop"
 import "react-image-crop/dist/ReactCrop.css"
+import Webcam from "react-webcam"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 interface Ingredient {
@@ -266,6 +267,20 @@ export function Scanner({ allergies }: ScannerProps) {
   const [rawImageSrc, setRawImageSrc] = useState<string | null>(null)
   const [crop, setCrop] = useState<CropType>()
   const cropImgRef = useRef<HTMLImageElement>(null)
+
+  // ── Live Camera state ───────────────────────────────────────────────────────
+  const [liveCameraOpen, setLiveCameraOpen] = useState(false)
+  const webcamRef = useRef<Webcam>(null)
+
+  const captureLiveFrame = useCallback(() => {
+    const imageSrc = webcamRef.current?.getScreenshot()
+    if (imageSrc) {
+      setLiveCameraOpen(false)
+      setRawImageSrc(imageSrc)
+      setCrop(undefined)
+      setCropModalOpen(true)
+    }
+  }, [webcamRef])
 
   const onCropImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
     const { width, height } = e.currentTarget
@@ -540,30 +555,42 @@ export function Scanner({ allergies }: ScannerProps) {
           </AnimatePresence>
 
           {/* Buttons */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-2 sm:gap-3">
             <Button
               variant="outline"
-              className="h-28 sm:h-32 border-dashed border-2 rounded-2xl flex flex-col gap-2 hover:bg-primary/5 hover:border-primary transition-all group"
+              className="h-24 sm:h-32 border-dashed border-2 rounded-2xl flex flex-col gap-1 sm:gap-2 hover:bg-primary/5 hover:border-primary transition-all group p-1"
               onClick={() => fileInputRef.current?.click()}
               disabled={isProcessing}
             >
-              <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
-                <Upload className="w-5 h-5 text-primary" />
+              <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
+                <Upload className="w-4 h-4 sm:w-5 sm:h-5 text-primary" />
               </div>
-              <span className="font-semibold text-sm text-muted-foreground group-hover:text-foreground">Upload Photo</span>
-              <span className="text-[10px] text-muted-foreground/60">Gallery / Files</span>
+              <span className="font-semibold text-xs sm:text-sm text-muted-foreground group-hover:text-foreground">Upload</span>
+              <span className="hidden sm:inline text-[10px] text-muted-foreground/60">Gallery / Files</span>
             </Button>
             <Button
-              variant="default"
-              className="h-28 sm:h-32 rounded-2xl flex flex-col gap-2 hero-gradient border-0 shadow-lg shadow-primary/30 hover:opacity-90 transition-all"
+              variant="outline"
+              className="h-24 sm:h-32 rounded-2xl flex flex-col gap-1 sm:gap-2 bg-muted/30 hover:bg-muted/50 border border-border/50 transition-all p-1"
               onClick={() => cameraInputRef.current?.click()}
               disabled={isProcessing}
             >
-              <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center">
-                <Camera className="w-5 h-5 text-white" />
+              <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-background border flex items-center justify-center">
+                <Camera className="w-4 h-4 sm:w-5 sm:h-5 text-foreground/80" />
               </div>
-              <span className="font-semibold text-sm text-white">Take Photo</span>
-              <span className="text-[10px] text-white/60">Use Camera</span>
+              <span className="font-semibold text-xs sm:text-sm text-foreground/80">Camera App</span>
+              <span className="hidden sm:inline text-[10px] text-muted-foreground/60">Device Camera</span>
+            </Button>
+            <Button
+              variant="default"
+              className="h-24 sm:h-32 rounded-2xl flex flex-col gap-1 sm:gap-2 hero-gradient border-0 shadow-lg shadow-primary/30 hover:opacity-90 transition-all p-1"
+              onClick={() => setLiveCameraOpen(true)}
+              disabled={isProcessing}
+            >
+              <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl bg-white/20 flex items-center justify-center">
+                <ScanLine className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
+              </div>
+              <span className="font-semibold text-xs sm:text-sm text-white">Live Scan</span>
+              <span className="hidden sm:inline text-[10px] text-white/60">In-App Scanner</span>
             </Button>
           </div>
 
@@ -640,6 +667,59 @@ export function Scanner({ allergies }: ScannerProps) {
                   <Crop className="w-4 h-4" />
                   Crop & Scan
                 </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          {/* ── Live Camera Modal ── */}
+          <Dialog open={liveCameraOpen} onOpenChange={open => { if (!open) setLiveCameraOpen(false) }}>
+            <DialogContent className="rounded-3xl border border-border/50 glass-card max-w-lg w-full mx-3 p-0 overflow-hidden bg-black">
+              {/* Header */}
+              <div className="absolute top-0 inset-x-0 z-10 bg-gradient-to-b from-black/80 to-transparent p-4 flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                  <span className="text-white text-xs font-bold tracking-wider">LIVE</span>
+                </div>
+                <button
+                  onClick={() => setLiveCameraOpen(false)}
+                  className="w-8 h-8 rounded-full bg-black/50 hover:bg-black/80 flex items-center justify-center transition-colors border border-white/20"
+                >
+                  <X className="w-4 h-4 text-white" />
+                </button>
+              </div>
+
+              {/* Camera Feed */}
+              <div className="relative flex items-center justify-center bg-black min-h-[50vh]">
+                {liveCameraOpen && (
+                  <Webcam
+                    audio={false}
+                    ref={webcamRef}
+                    screenshotFormat="image/jpeg"
+                    videoConstraints={{ facingMode: "environment" }}
+                    className="w-full h-full object-cover"
+                    style={{ minHeight: "50vh", maxHeight: "70vh" }}
+                  />
+                )}
+                
+                {/* Targeting reticle overlay */}
+                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                  <div className="w-3/4 h-1/3 border-2 border-white/30 rounded-2xl relative">
+                    <div className="absolute -top-1 -left-1 w-6 h-6 border-t-2 border-l-2 border-white" />
+                    <div className="absolute -top-1 -right-1 w-6 h-6 border-t-2 border-r-2 border-white" />
+                    <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-2 border-l-2 border-white" />
+                    <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-2 border-r-2 border-white" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="absolute bottom-0 inset-x-0 p-6 flex justify-center bg-gradient-to-t from-black/90 via-black/60 to-transparent">
+                <button
+                  onClick={captureLiveFrame}
+                  className="w-16 h-16 rounded-full bg-white/20 border-4 border-white flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-lg"
+                >
+                  <div className="w-12 h-12 rounded-full bg-white" />
+                </button>
               </div>
             </DialogContent>
           </Dialog>
