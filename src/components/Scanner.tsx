@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useCallback } from "react"
+import { useState, useRef, useCallback, useEffect } from "react"
 import { createWorker } from "tesseract.js"
 import { Camera, Upload, Loader2, CheckCircle2, AlertCircle, ScanLine, Globe, FlaskConical, X, Crop, RotateCcw } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -249,6 +249,31 @@ function extractCroppedDataUrl(
   return canvas.toDataURL("image/jpeg", 0.95)
 }
 
+function processTokens(tokens: string[], allergies: string[]): Ingredient[] {
+  const EXACT_IGNORE = new Set(["active", "inactive", "purpose", "uses", "warnings", "directions", "s", "ee"])
+  return tokens
+    .filter(t => !EXACT_IGNORE.has(t))
+    .map(name => {
+      let nameEn: string | undefined
+      if (/[\u4e00-\u9fff]/.test(name)) {
+        const translated = translateZhToken(name)
+        if (translated) nameEn = translated
+      }
+      const checkName = nameEn || name
+      const isAllergen = allergies.some(a =>
+        checkName.toLowerCase().includes(a.toLowerCase())
+      )
+      const dbRecord = lookupAllergen(checkName) ?? undefined
+      return {
+        name,
+        nameEn,
+        isAllergen,
+        dbRecord,
+        description: dbRecord?.description ?? "An ingredient found on the product label.",
+      }
+    })
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 export function Scanner({ allergies }: ScannerProps) {
   const [isProcessing, setIsProcessing] = useState(false)
@@ -270,17 +295,81 @@ export function Scanner({ allergies }: ScannerProps) {
 
   // ── Live Camera state ───────────────────────────────────────────────────────
   const [liveCameraOpen, setLiveCameraOpen] = useState(false)
+  const [isLiveScanning, setIsLiveScanning] = useState(false)
   const webcamRef = useRef<Webcam>(null)
+  const liveWorkerRef = useRef<Tesseract.Worker | null>(null)
+  const liveScanActiveRef = useRef<boolean>(false)
+
+  const stopLiveScan = useCallback(() => {
+    liveScanActiveRef.current = false
+    setIsLiveScanning(false)
+    if (liveWorkerRef.current) {
+      liveWorkerRef.current.terminate()
+      liveWorkerRef.current = null
+    }
+  }, [])
+
+  const startLiveScan = useCallback(async () => {
+    setIsLiveScanning(true)
+    liveScanActiveRef.current = true
+    try {
+      // Create a long-lived worker for the real-time loop
+      const worker = await createWorker("eng+chi_sim+tha", 1)
+      liveWorkerRef.current = worker
+      
+      const scanLoop = async () => {
+        if (!liveScanActiveRef.current || !webcamRef.current) return
+        
+        const imageSrc = webcamRef.current.getScreenshot()
+        if (imageSrc) {
+          const { data } = await worker.recognize(imageSrc)
+          const text = data.text
+          
+          if (text.trim().length > 15) {
+            const tokens = parseIngredientZone(text)
+            // If we found at least 2 ingredients, consider it a successful auto-scan
+            if (tokens.length >= 2) {
+              const processed = processTokens(tokens, allergies)
+              setResults(processed)
+              setLiveCameraOpen(false)
+              stopLiveScan()
+              return
+            }
+          }
+        }
+        
+        // Loop again after a brief pause
+        if (liveScanActiveRef.current) {
+          setTimeout(scanLoop, 500)
+        }
+      }
+      
+      scanLoop()
+    } catch (err) {
+      console.error("Live scan error:", err)
+      setIsLiveScanning(false)
+    }
+  }, [allergies, stopLiveScan])
+
+  useEffect(() => {
+    if (liveCameraOpen) {
+      startLiveScan()
+    } else {
+      stopLiveScan()
+    }
+    return () => stopLiveScan()
+  }, [liveCameraOpen, startLiveScan, stopLiveScan])
 
   const captureLiveFrame = useCallback(() => {
     const imageSrc = webcamRef.current?.getScreenshot()
     if (imageSrc) {
       setLiveCameraOpen(false)
+      stopLiveScan()
       setRawImageSrc(imageSrc)
       setCrop(undefined)
       setCropModalOpen(true)
     }
-  }, [webcamRef])
+  }, [stopLiveScan])
 
   const onCropImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
     const { width, height } = e.currentTarget
@@ -382,30 +471,7 @@ export function Scanner({ allergies }: ScannerProps) {
         return
       }
 
-      const EXACT_IGNORE = new Set(["active", "inactive", "purpose", "uses", "warnings", "directions", "s", "ee"])
-
-      const processed: Ingredient[] = tokens
-        .filter(t => !EXACT_IGNORE.has(t))
-        .map(name => {
-          let nameEn: string | undefined
-          if (/[\u4e00-\u9fff]/.test(name)) {
-            const translated = translateZhToken(name)
-            if (translated) nameEn = translated
-          }
-          const checkName = nameEn || name
-          const isAllergen = allergies.some(a =>
-            checkName.toLowerCase().includes(a.toLowerCase())
-          )
-          // Enrich from local DB
-          const dbRecord = lookupAllergen(checkName) ?? undefined
-          return {
-            name,
-            nameEn,
-            isAllergen,
-            dbRecord,
-            description: dbRecord?.description ?? "An ingredient found on the product label.",
-          }
-        })
+      const processed = processTokens(tokens, allergies)
 
       setResults(processed)
     } catch (err) {
@@ -677,8 +743,10 @@ export function Scanner({ allergies }: ScannerProps) {
               {/* Header */}
               <div className="absolute top-0 inset-x-0 z-10 bg-gradient-to-b from-black/80 to-transparent p-4 flex justify-between items-center">
                 <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                  <span className="text-white text-xs font-bold tracking-wider">LIVE</span>
+                  <div className={`w-2 h-2 rounded-full ${isLiveScanning ? "bg-red-500 animate-pulse" : "bg-gray-400"}`} />
+                  <span className="text-white text-xs font-bold tracking-wider">
+                    {isLiveScanning ? "AUTO-SCANNING..." : "STARTING CAMERA..."}
+                  </span>
                 </div>
                 <button
                   onClick={() => setLiveCameraOpen(false)}
@@ -703,7 +771,14 @@ export function Scanner({ allergies }: ScannerProps) {
                 
                 {/* Targeting reticle overlay */}
                 <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                  <div className="w-3/4 h-1/3 border-2 border-white/30 rounded-2xl relative">
+                  <div className="w-3/4 h-1/3 border-2 border-white/30 rounded-2xl relative overflow-hidden">
+                    {isLiveScanning && (
+                      <motion.div
+                        className="absolute left-0 right-0 h-0.5 bg-green-400/80 shadow-[0_0_8px_2px_rgba(74,222,128,0.5)]"
+                        animate={{ top: ["0%", "100%", "0%"] }}
+                        transition={{ duration: 2.5, repeat: Infinity, ease: "linear" }}
+                      />
+                    )}
                     <div className="absolute -top-1 -left-1 w-6 h-6 border-t-2 border-l-2 border-white" />
                     <div className="absolute -top-1 -right-1 w-6 h-6 border-t-2 border-r-2 border-white" />
                     <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-2 border-l-2 border-white" />
@@ -713,7 +788,10 @@ export function Scanner({ allergies }: ScannerProps) {
               </div>
 
               {/* Actions */}
-              <div className="absolute bottom-0 inset-x-0 p-6 flex justify-center bg-gradient-to-t from-black/90 via-black/60 to-transparent">
+              <div className="absolute bottom-0 inset-x-0 p-6 flex flex-col items-center gap-3 bg-gradient-to-t from-black/90 via-black/60 to-transparent">
+                <p className="text-white/80 text-xs font-medium text-center">
+                  Point at ingredients for auto-scan<br/>or tap below to capture manually
+                </p>
                 <button
                   onClick={captureLiveFrame}
                   className="w-16 h-16 rounded-full bg-white/20 border-4 border-white flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-lg"
