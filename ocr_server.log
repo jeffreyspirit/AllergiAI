@@ -1,0 +1,10 @@
+Loading EasyOCR models for EN, TH, ZH...
+Traceback (most recent call last):
+  File "/Users/khemjirathhengswat/Desktop/Identification/care/ocr_server.py", line 23, in <module>
+    reader = easyocr.Reader(['en', 'th', 'ch_sim'])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/easyocr/easyocr.py", line 116, in __init__
+    self.setModelLanguage('thai', lang_list, ['th','en'], '["th","en"]')
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/easyocr/easyocr.py", line 286, in setModelLanguage
+    raise ValueError(language.capitalize() + ' is only compatible with English, try lang_list=' + list_lang_string)
+ValueError: Thai is only compatible with English, try lang_list=["th","en"]

@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useRef, useCallback, useEffect } from "react"
-import { createWorker } from "tesseract.js"
 import { Camera, Upload, Loader2, CheckCircle2, AlertCircle, ScanLine, Globe, FlaskConical, X, Crop, RotateCcw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardTitle, CardDescription } from "@/components/ui/card"
@@ -297,44 +296,44 @@ export function Scanner({ allergies }: ScannerProps) {
   const [liveCameraOpen, setLiveCameraOpen] = useState(false)
   const [isLiveScanning, setIsLiveScanning] = useState(false)
   const webcamRef = useRef<Webcam>(null)
-  const liveWorkerRef = useRef<Tesseract.Worker | null>(null)
   const liveScanActiveRef = useRef<boolean>(false)
 
   const stopLiveScan = useCallback(() => {
     liveScanActiveRef.current = false
     setIsLiveScanning(false)
-    if (liveWorkerRef.current) {
-      liveWorkerRef.current.terminate()
-      liveWorkerRef.current = null
-    }
   }, [])
 
   const startLiveScan = useCallback(async () => {
     setIsLiveScanning(true)
     liveScanActiveRef.current = true
     try {
-      // Create a long-lived worker for the real-time loop
-      const worker = await createWorker("eng+chi_sim+tha", 1)
-      liveWorkerRef.current = worker
-      
       const scanLoop = async () => {
         if (!liveScanActiveRef.current || !webcamRef.current) return
         
         const imageSrc = webcamRef.current.getScreenshot()
         if (imageSrc) {
-          const { data } = await worker.recognize(imageSrc)
-          const text = data.text
-          
-          if (text.trim().length > 15) {
-            const tokens = parseIngredientZone(text)
-            // If we found at least 2 ingredients, consider it a successful auto-scan
-            if (tokens.length >= 2) {
-              const processed = processTokens(tokens, allergies)
-              setResults(processed)
-              setLiveCameraOpen(false)
-              stopLiveScan()
-              return
+          try {
+            const res = await fetch("http://localhost:8001/scan", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ image_base64: imageSrc })
+            })
+            const data = await res.json()
+            const text = data.text || ""
+            
+            if (text.trim().length > 15) {
+              const tokens = parseIngredientZone(text)
+              // If we found at least 2 ingredients, consider it a successful auto-scan
+              if (tokens.length >= 2) {
+                const processed = processTokens(tokens, allergies)
+                setResults(processed)
+                setLiveCameraOpen(false)
+                stopLiveScan()
+                return
+              }
             }
+          } catch (e) {
+            console.error("OCR backend error:", e)
           }
         }
         
@@ -403,63 +402,22 @@ export function Scanner({ allergies }: ScannerProps) {
     setDetectedLang(null)
 
     try {
-      // ── Pass 1: tri-language probe to detect dominant script ───────────────
-      // Must include chi_sim+tha or Chinese/Thai chars are never seen by OCR
-      setProgressMsg("Detecting language…")
-      const probe = await createWorker("eng+chi_sim+tha", 1)
-      const { data: probeData } = await probe.recognize(imageSrc)
-      await probe.terminate()
+      setProgressMsg("Sending to AI Model (EasyOCR)…")
 
-      const probeText = probeData.text
-      const probeConf  = probeData.confidence
-
-      // Detect dominant language FIRST (before quality gate, so ZH labels aren't rejected)
-      const lang = detectLanguage(probeText)
-      setDetectedLang(lang)
-
-      // Quality gate — Chinese OCR always returns low confidence, so skip for ZH/TH
-      const isLatin = lang === "en" || lang === "unknown"
-      if (isLatin && probeConf < 20 && probeText.trim().length < 30) {
-        setScanError("low_quality")
-        return
-      }
-      if (probeText.trim().length < 5) {
-        setScanError("no_text")
-        return
-      }
-
-      // ── Pass 2: re-scan with targeted single-language model ────────────────
-      const langModel: Record<string, string> = {
-        zh: "chi_sim",
-        th: "tha",
-        en: "eng",
-        unknown: "eng",
-        mixed: "eng+chi_sim+tha",
-      }
-      const ocrLang = langModel[lang] ?? "eng"
-
-      setProgressMsg(`Scanning with ${LANG_LABELS[lang]?.label ?? "auto"} model…`)
-
-      const worker = await createWorker(ocrLang, 1, {
-        logger: m => {
-          if (m.status === "recognizing text") {
-            setProgress(Math.round(m.progress * 100))
-            setProgressMsg(`Reading label… ${Math.round(m.progress * 100)}%`)
-          }
-        },
+      const res = await fetch("http://localhost:8001/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_base64: imageSrc })
       })
 
-      const { data } = await worker.recognize(imageSrc)
-      await worker.terminate()
+      if (!res.ok) throw new Error("Failed to reach OCR server")
 
-      const finalText = data.text
-      const finalConf  = data.confidence
+      const data = await res.json()
+      const finalText = data.text || ""
 
-      // Quality gate on final pass — again skip for non-Latin scripts
-      if (isLatin && finalConf < 25 && finalText.trim().length < 40) {
-        setScanError("low_quality")
-        return
-      }
+      // Since EasyOCR backend handles all languages seamlessly, we just auto-detect for display
+      const lang = detectLanguage(finalText)
+      setDetectedLang(lang)
 
       setProgressMsg("Analysing ingredients…")
 
