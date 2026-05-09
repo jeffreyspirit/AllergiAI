@@ -303,52 +303,65 @@ export function Scanner({ allergies }: ScannerProps) {
     setIsLiveScanning(false)
   }, [])
 
-  const startLiveScan = useCallback(async () => {
+  const startLiveScan = useCallback(() => {
     setIsLiveScanning(true)
     liveScanActiveRef.current = true
-    try {
-      const scanLoop = async () => {
-        if (!liveScanActiveRef.current || !webcamRef.current) return
+    
+    const canvas = document.createElement("canvas")
+    canvas.width = 64
+    canvas.height = 48
+    const ctx = canvas.getContext("2d", { willReadFrequently: true })
+    
+    let lastImageData: Uint8ClampedArray | null = null
+    let stableFrames = 0
+
+    const checkMotionLoop = () => {
+      if (!liveScanActiveRef.current || !webcamRef.current) return
+      
+      const video = webcamRef.current.video
+      if (video && ctx && video.readyState === 4) {
+        ctx.drawImage(video, 0, 0, 64, 48)
+        const imageData = ctx.getImageData(0, 0, 64, 48).data
         
-        const imageSrc = webcamRef.current.getScreenshot()
-        if (imageSrc) {
-          try {
-            const res = await fetch("http://localhost:8001/scan", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ image_base64: imageSrc })
-            })
-            const data = await res.json()
-            const text = data.text || ""
-            
-            if (text.trim().length > 15) {
-              const tokens = parseIngredientZone(text)
-              // If we found at least 2 ingredients, consider it a successful auto-scan
-              if (tokens.length >= 2) {
-                const processed = processTokens(tokens, allergies)
-                setResults(processed)
-                setLiveCameraOpen(false)
-                stopLiveScan()
-                return
-              }
+        if (lastImageData) {
+          let diff = 0
+          for (let i = 0; i < imageData.length; i += 4) {
+            diff += Math.abs(imageData[i] - lastImageData[i])
+            diff += Math.abs(imageData[i+1] - lastImageData[i+1])
+            diff += Math.abs(imageData[i+2] - lastImageData[i+2])
+          }
+          const avgDiff = diff / (64 * 48 * 3)
+          
+          // If the difference is small, camera is stable
+          if (avgDiff < 12) {
+            stableFrames += 1
+          } else {
+            stableFrames = 0
+          }
+          
+          // Auto-capture after ~1.2 seconds of stability (12 frames at 10fps)
+          if (stableFrames >= 12) {
+            const imageSrc = webcamRef.current.getScreenshot()
+            if (imageSrc) {
+              setLiveCameraOpen(false)
+              stopLiveScan()
+              setRawImageSrc(imageSrc)
+              setCrop(undefined)
+              setCropModalOpen(true)
+              return
             }
-          } catch (e) {
-            console.error("OCR backend error:", e)
           }
         }
-        
-        // Loop again after a brief pause
-        if (liveScanActiveRef.current) {
-          setTimeout(scanLoop, 500)
-        }
+        lastImageData = new Uint8ClampedArray(imageData)
       }
       
-      scanLoop()
-    } catch (err) {
-      console.error("Live scan error:", err)
-      setIsLiveScanning(false)
+      if (liveScanActiveRef.current) {
+        setTimeout(checkMotionLoop, 100) // 10 fps
+      }
     }
-  }, [allergies, stopLiveScan])
+    
+    checkMotionLoop()
+  }, [stopLiveScan])
 
   useEffect(() => {
     if (liveCameraOpen) {
@@ -701,9 +714,9 @@ export function Scanner({ allergies }: ScannerProps) {
               {/* Header */}
               <div className="absolute top-0 inset-x-0 z-10 bg-gradient-to-b from-black/80 to-transparent p-4 flex justify-between items-center">
                 <div className="flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full ${isLiveScanning ? "bg-red-500 animate-pulse" : "bg-gray-400"}`} />
+                  <div className={`w-2 h-2 rounded-full ${isLiveScanning ? "bg-amber-500 animate-pulse" : "bg-gray-400"}`} />
                   <span className="text-white text-xs font-bold tracking-wider">
-                    {isLiveScanning ? "AUTO-SCANNING..." : "STARTING CAMERA..."}
+                    {isLiveScanning ? "HOLD STEADY..." : "STARTING CAMERA..."}
                   </span>
                 </div>
                 <button
@@ -748,7 +761,7 @@ export function Scanner({ allergies }: ScannerProps) {
               {/* Actions */}
               <div className="absolute bottom-0 inset-x-0 p-6 flex flex-col items-center gap-3 bg-gradient-to-t from-black/90 via-black/60 to-transparent">
                 <p className="text-white/80 text-xs font-medium text-center">
-                  Point at ingredients for auto-scan<br/>or tap below to capture manually
+                  Hold camera steady to auto-capture<br/>or tap below to capture manually
                 </p>
                 <button
                   onClick={captureLiveFrame}
